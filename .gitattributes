@@ -1,0 +1,4 @@
+# Scripts run on the Linux server; keep LF so bash and hashes match on both sides.
+* text=auto eol=lf
+*.png binary
+*.pdf binary

@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Experiment outputs, checkpoints and downloaded third-party code stay out of git.
+outputs/
+results/
+external/
+*.pt
+*.safetensors
+*.gguf
+*.onnx
+
+# Scratch work, papers (third-party PDFs) and machine-local settings.
+tmp/
+paper/
+.claude/
+.env
+.env.*
+!.env.example
