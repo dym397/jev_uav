@@ -92,6 +92,33 @@ class JevK5Backend:
         return validate_distribution(self.model.decide(state, question)["probabilities"], question["criteria"])
 
 
+def _renormalized(raw: dict) -> dict:
+    # decider rounds each probability to 4 decimals; renormalize so the sum check is exact.
+    total = math.fsum(raw.values())
+    return {k: v / total for k, v in raw.items()} if total > 0 else raw
+
+
+class DeciderBackend:
+    """In-process decider-ai (Mapika/decider): option-letter logits at one answer slot.
+
+    Also serves as the zero-shot LLM-logit control: a stock causal LM loaded through the
+    same Decider gets the same prompt layout and readout, at temperature 1 (no config).
+    """
+
+    def __init__(self, decider, *, model_id: str):
+        self.decider = decider
+        self.model_id = model_id
+
+    def ask(self, state: str, question: dict) -> dict[str, float]:
+        answer = self.decider.system_one(state, {"q": question})["answers"]["q"]
+        return validate_distribution(_renormalized(answer["probabilities"]), question["criteria"])
+
+    def predict(self, payload: dict) -> dict[int, float]:
+        answer = self.decider.system_one(payload["state"], payload["questions"])["answers"]["action"]
+        answer = {**answer, "probabilities": _renormalized(answer["probabilities"])}
+        return normalize_choice({"answers": {"action": answer}})
+
+
 class LayaBackend:
     """In-process laya agent; predict() already returns a SystemOne-shaped response."""
 

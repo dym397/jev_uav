@@ -82,3 +82,34 @@ def test_http_adapter_posts_systemone_payload_and_reads_probabilities():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+class FakeDecider:
+    """Answers like decider-ai's system_one: probabilities rounded to 4 decimals."""
+
+    def __init__(self):
+        self.calls = []
+
+    def system_one(self, state, questions):
+        self.calls.append((state, questions))
+        answers = {}
+        for qid, question in questions.items():
+            keys = list(question["criteria"])
+            raw = {k: round(1 / len(keys), 4) for k in keys}  # 9 x 0.1111 = 0.9999
+            answers[qid] = {"type": "choice", "choice": keys[0], "probabilities": raw}
+        return {"answers": answers}
+
+
+def test_decider_adapter_asks_one_question_and_renormalizes_rounding():
+    from uav_eval.backends import DeciderBackend
+
+    fake = FakeDecider()
+    backend = DeciderBackend(fake, model_id="decider-4b")
+    question = {"type": "choice", "instructions": "Pick.", "criteria": {"b": "B", "a": "A", "c": "C"}}
+    result = backend.ask("state text", question)
+    assert fake.calls == [("state text", {"q": question})]
+    assert set(result) == {"a", "b", "c"} and sum(result.values()) == pytest.approx(1.0, abs=1e-12)
+
+    action = {"type": "choice", "instructions": "Act.", "criteria": {str(i): f"action {i}" for i in range(9)}}
+    values = backend.predict({"state": "s", "questions": {"action": action}})
+    assert set(values) == set(range(9)) and sum(values.values()) == pytest.approx(1.0, abs=1e-12)
