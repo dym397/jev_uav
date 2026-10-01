@@ -79,7 +79,7 @@ def test_analyze_writes_table(tmp_path):
 def test_oracle_plan_replays_to_success():
     from uav_eval.e5 import oracle_feasible
 
-    found = oracle_feasible(5000, beam=16)
+    found = oracle_feasible(5000)
     assert found["solvable"]  # seed 5000 has a known collision-free plan
     plan = list(found["plan"])
 
