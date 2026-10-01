@@ -58,6 +58,7 @@ def main(argv=None) -> None:
     run.add_argument("--model-id")
     run.add_argument("--model-path", type=Path)
     run.add_argument("--endpoint")
+    run.add_argument("--request-model", help="systemone: the request's model name, if not --model-id")
     run.add_argument("--checkpoint-dir", type=Path, default=Path("external/NanoJev/checkpoints/NanoJev-unified"))
     run.add_argument("--source-dir", type=Path, default=Path("external/NanoJev"))
     run.add_argument("--device", default="cuda:0")
@@ -81,7 +82,8 @@ def main(argv=None) -> None:
     elif args.command == "run":
         probes = read_probes(args.probes)[: args.limit]
         backend = build_backend(args.backend, model_id=args.model_id, model_path=args.model_path,
-                                endpoint=args.endpoint, checkpoint_dir=args.checkpoint_dir,
+                                endpoint=args.endpoint, request_model=args.request_model,
+                                checkpoint_dir=args.checkpoint_dir,
                                 source_dir=args.source_dir, device=args.device)
         args.output_dir.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "run_config.json").write_text(json.dumps({

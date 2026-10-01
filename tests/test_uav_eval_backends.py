@@ -78,6 +78,11 @@ def test_http_adapter_posts_systemone_payload_and_reads_probabilities():
         payload = {"state": "uav state", "questions": {"action": {"type": "choice"}}}
         assert backend.predict(payload)[4] == 0.92
         assert received == [("/v1/systemone", {"model": "local-checkpoint", **payload})]
+        # The table label and the server's accepted model name can differ (Open-Jev checks the name).
+        labeled = SystemOneHTTPBackend(url, model_id="Open-Jev-9B", request_model="open-jev")
+        labeled.predict(payload)
+        assert labeled.model_id == "Open-Jev-9B"
+        assert received[-1] == ("/v1/systemone", {"model": "open-jev", **payload})
     finally:
         server.shutdown()
         server.server_close()

@@ -135,10 +135,13 @@ class LayaBackend:
 
 
 class SystemOneHTTPBackend:
-    def __init__(self, url: str, *, model_id: str | None = None, timeout: float = 60.0):
+    def __init__(self, url: str, *, model_id: str | None = None, request_model: str | None = None,
+                 timeout: float = 60.0):
         self.url = url
         self.model_id = model_id or url
-        self.request_model = model_id
+        # Sent as the request's "model"; some servers accept only their own names (Open-Jev), so the
+        # label in our tables (model_id) can differ from it.
+        self.request_model = request_model if request_model is not None else model_id
         self.timeout = timeout
 
     def ask(self, state: str, question: dict) -> dict[str, float]:

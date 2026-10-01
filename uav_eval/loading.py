@@ -6,7 +6,7 @@ from pathlib import Path
 BACKENDS = ("nano", "systemone", "jevk5", "laya", "decider")
 
 
-def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None,
+def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None, request_model=None,
                   checkpoint_dir=Path("external/NanoJev/checkpoints/NanoJev-unified"),
                   source_dir=Path("external/NanoJev"), device="cuda:0", precision="bf16"):
     from .backends import DeciderBackend, JevK5Backend, LayaBackend, NanoBackend, SystemOneHTTPBackend
@@ -34,5 +34,5 @@ def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None,
             torch.cuda.set_device(device)
         return DeciderBackend(Decider(str(model_path), device=device), model_id=model_id or Path(model_path).name)
     if kind == "systemone":
-        return SystemOneHTTPBackend(endpoint, model_id=model_id)
+        return SystemOneHTTPBackend(endpoint, model_id=model_id, request_model=request_model)
     raise ValueError(f"Unknown backend: {kind}")

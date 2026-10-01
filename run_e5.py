@@ -18,7 +18,8 @@ def _seeds(args) -> range:
 
 def run_model(args) -> None:
     backend = build_backend(args.backend, model_id=args.model_id, model_path=args.model_path,
-                            endpoint=None, checkpoint_dir=args.checkpoint_dir, source_dir=args.source_dir,
+                            endpoint=args.endpoint, request_model=args.request_model,
+                            checkpoint_dir=args.checkpoint_dir, source_dir=args.source_dir,
                             device=args.device, precision="bf16")
     for style in args.styles:
         run_policy(f"{backend.model_id}:{style}", ModelPolicy(backend, style), _seeds(args),
@@ -92,6 +93,8 @@ def main(argv=None) -> None:
     model.add_argument("--backend", choices=BACKENDS, required=True)
     model.add_argument("--model-path", type=Path)
     model.add_argument("--model-id")
+    model.add_argument("--endpoint", help="systemone: the /v1/systemone URL")
+    model.add_argument("--request-model", help="systemone: the request's model name, if not --model-id")
     model.add_argument("--checkpoint-dir", type=Path,
                        default=Path("external/NanoJev/checkpoints/NanoJev-unified"))
     model.add_argument("--source-dir", type=Path, default=Path("external/NanoJev"))
