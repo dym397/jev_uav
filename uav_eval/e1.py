@@ -21,7 +21,7 @@ QUESTIONS = ("approach", "side", "conflict", "action", "action_shuffled")
 # cpa_brief states code-computed TCPA/DCPA: its risk answers are "assisted", not recognition.
 ASSISTED_STYLES = ("cpa_brief",)
 # paper14 has no relative velocity: approach and conflict are not identifiable from it.
-MOTION_BLIND_STYLES = ("paper14",)
+MOTION_BLIND_STYLES = ("paper14", "paper14_prose", "paper14_semantic")
 
 
 def _seeded(*parts) -> random.Random:

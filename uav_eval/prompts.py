@@ -5,7 +5,7 @@ They never query the simulator's future state or episode outcome.
 """
 
 from dataclasses import dataclass
-from math import atan2, degrees, hypot
+from math import atan2, cos, degrees, hypot, sin
 
 from config import ACTION_SPACE, action_control
 from environment.observation import wrap_angle
@@ -13,12 +13,26 @@ from environment.observation import wrap_angle
 
 # first_person_polar / third_person_polar state identical facts (range, bearing,
 # relative velocity); only the grammatical perspective differs. The *_semantic
-# styles carry the same current facts as graded words with no numbers.
+# styles carry derived facts (range rate, bearing rate, arrival vs deadline) as
+# graded words with no numbers.
+#
+# Equal-information pairs, so that one factor changes at a time:
+#   paper14 -> paper14_prose          the D3QN's 14 values: fields -> sentences (same numbers)
+#   paper14_prose -> paper14_semantic same 14 values: numbers -> graded words
+#   first_person_derived -> first_person_semantic   same derived facts: numbers -> words
+#   first_person_polar -> first_person_derived      raw relative velocity -> derived rates
+#   first_person_polar -> first_person_clock        bearing frame: degrees -> clock positions
+#   first_person_polar -> first_person_world        body frame -> world coordinates
+#   first_person_polar -> first_person_list         format: prose -> bullet list
 STATE_STYLES = ("paper14", "kinematic_fields", "kinematic_prose", "cpa_brief",
                 "first_person_polar", "third_person_polar",
-                "first_person_semantic", "third_person_semantic")
-FIRST_PERSON_STYLES = ("first_person_polar", "first_person_semantic")
+                "first_person_semantic", "third_person_semantic",
+                "paper14_prose", "paper14_semantic", "first_person_derived",
+                "first_person_clock", "first_person_world", "first_person_list")
+FIRST_PERSON_STYLES = ("first_person_polar", "first_person_semantic", "first_person_derived",
+                       "first_person_clock", "first_person_world", "first_person_list")
 SEMANTIC_STYLES = ("first_person_semantic", "third_person_semantic")
+PAPER14_STYLES = ("paper14", "paper14_prose", "paper14_semantic")
 QUESTION_STYLES = ("balanced", "safety_first")
 CPA_HORIZON_S = 10.0
 
@@ -202,12 +216,175 @@ def _semantic(observation, *, first_person: bool) -> str:
     return "\n".join(lines)
 
 
+# The nine paper sectors are 40 deg wide; sector i is centred i * 40 deg left of the nose.
+SECTOR_WORDS = ("straight ahead", "ahead to the left", "off to the left", "behind to the left",
+                "almost directly behind, slightly left", "almost directly behind, slightly right",
+                "behind to the right", "off to the right", "ahead to the right")
+COMPASS = ("east", "north-east", "north", "north-west", "west", "south-west", "south", "south-east")
+
+
+def _paper14_parts(observation):
+    values = [float(v) for v in observation.numeric]
+    if len(values) != 14:
+        raise ValueError("Paper observation requires exactly 14 values")
+    heading, speed, goal_ratio, goal_angle, eta_ratio = values[:5]
+    return heading, speed, goal_ratio, degrees(wrap_angle(goal_angle)), eta_ratio, values[5:]
+
+
+def _paper14_prose(observation) -> str:
+    """The D3QN's 14 values as sentences: same numbers (angles in degrees), no added facts."""
+    heading, speed, goal_ratio, goal_deg, eta_ratio, sectors = _paper14_parts(observation)
+    lines = [
+        f"The UAV's heading is {_number(degrees(heading))} deg counter-clockwise from the +x axis "
+        f"and its speed is {_number(speed)} m/s. Its goal is {_number(goal_ratio)} of the leg length "
+        f"away, {_side(goal_deg)}. Its estimated remaining flight time is {_number(eta_ratio)} "
+        f"times the leg's deadline (deadline counted from the start of the leg).",
+        "Nearest intruder in each 40 deg sector, as a fraction of the 100 m detection radius "
+        "(1 means nothing detected):",
+    ]
+    lines.extend(f"Sector centred {_side(wrap_angle_deg(40 * i))}: {_number(v)}."
+                 for i, v in enumerate(sectors))
+    return "\n".join(lines)
+
+
+def wrap_angle_deg(angle_deg: float) -> float:
+    return (angle_deg + 180) % 360 - 180
+
+
+def _share_words(ratio: float) -> str:
+    for limit, words in ((0.1, "almost none"), (0.4, "less than half"), (0.6, "about half"),
+                         (0.95, "most"), (1.05, "about all")):
+        if ratio < limit:
+            return words
+    return "more than the whole"
+
+
+def _paper14_semantic(observation) -> str:
+    """The same 14 values as graded words; nothing derived beyond what the values state."""
+    heading, speed, goal_ratio, goal_deg, eta_ratio, sectors = _paper14_parts(observation)
+    compass = COMPASS[round(degrees(heading) % 360 / 45) % 8]
+    pace = "slowly" if speed < 3 else "at a moderate speed" if speed < 7 else "fast"
+    lines = [f"The UAV is heading roughly {compass} and flying {pace}. {_share_words(goal_ratio).capitalize()} "
+             f"of the leg to its goal is still ahead of it, and the goal is {_direction_words(goal_deg)}. "
+             f"Its estimated remaining flight time is {_share_words(eta_ratio)} of the leg's deadline "
+             f"(deadline counted from the start of the leg)."]
+    occupied = [f"{_range_words(100 * v)} {SECTOR_WORDS[i]}" for i, v in enumerate(sectors) if v < 1]
+    lines.append("Nearest intruder per direction: " + "; ".join(occupied) + "; every other direction is clear."
+                 if occupied else "No intruder is detected in any direction.")
+    return "\n".join(lines)
+
+
+def _contact_rates(contact) -> tuple[float, float, float, float]:
+    """(range m, bearing deg left of nose, range rate m/s, bearing rate deg/s left)."""
+    f, l = float(contact.forward_m), float(contact.left_m)
+    vf, vl = float(contact.relative_forward_mps), float(contact.relative_left_mps)
+    r = max(hypot(f, l), 1e-6)
+    return r, degrees(atan2(l, f)), (f * vf + l * vl) / r, degrees((f * vl - l * vf) / (r * r))
+
+
+def _goal_facts(observation):
+    """(goal distance m, goal bearing deg left of nose, seconds left until the deadline)."""
+    own_x, own_y = observation.own_position
+    goal_dx, goal_dy = observation.goal[0] - own_x, observation.goal[1] - own_y
+    return (hypot(goal_dx, goal_dy), degrees(wrap_angle(atan2(goal_dy, goal_dx) - observation.own_heading)),
+            observation.due_time - observation.current_time)
+
+
+def _deadline(remaining: float) -> str:
+    return (f"{_number(remaining)} s remain until my arrival deadline" if remaining >= 0
+            else f"my arrival deadline passed {_number(-remaining)} s ago")
+
+
+def _first_person_derived(observation) -> str:
+    """The facts behind first_person_semantic, as numbers instead of words."""
+    distance, goal_deg, remaining = _goal_facts(observation)
+    speed = float(observation.own_speed)
+    lines = [f"I am flying at {_number(speed)} m/s. My goal is {_side(goal_deg)}; at this speed I would "
+             f"arrive in {_number(distance / max(speed, 1e-6))} s, and {_deadline(remaining)}."]
+    if not observation.contacts:
+        lines.append("No intruder is detected near me.")
+    for index, contact in enumerate(observation.contacts):
+        r, bearing, range_rate, bearing_rate = _contact_rates(contact)
+        trend = (f"shrinking by {_number(-range_rate)} m/s" if range_rate < 0
+                 else f"growing by {_number(range_rate)} m/s")
+        drift = "left" if bearing_rate >= 0 else "right"
+        lines.append(f"Intruder {chr(ord('A') + index)} is {_number(r)} m from me, {_side(bearing)}. "
+                     f"The distance is {trend}, and seen from me its direction drifts "
+                     f"{_number(abs(bearing_rate))} deg/s to the {drift}.")
+    return "\n".join(lines)
+
+
+def _clock(angle_deg: float) -> int:
+    """Body-frame direction (positive = left) as a clock position, 12 = straight ahead."""
+    return round(-angle_deg / 30) % 12 or 12
+
+
+def _first_person_clock(observation) -> str:
+    """first_person_polar's facts with directions as clock positions."""
+    distance, goal_deg, remaining = _goal_facts(observation)
+    lines = [f"I am flying at {_number(observation.own_speed)} m/s. My goal is {_number(distance)} m "
+             f"away at my {_clock(goal_deg)} o'clock. {_deadline(remaining)[0].upper() + _deadline(remaining)[1:]}."]
+    if not observation.contacts:
+        lines.append("No intruder is detected within 100 m of me.")
+    for index, contact in enumerate(observation.contacts):
+        f, l = float(contact.forward_m), float(contact.left_m)
+        vf, vl = float(contact.relative_forward_mps), float(contact.relative_left_mps)
+        motion = (f"moves at {_number(hypot(vf, vl))} m/s toward my {_clock(degrees(atan2(vl, vf)))} o'clock"
+                  if hypot(vf, vl) else "does not move")
+        lines.append(f"Intruder {index + 1} is {_number(hypot(f, l))} m from me at my "
+                     f"{_clock(degrees(atan2(l, f)))} o'clock. Relative to me it {motion}.")
+    return "\n".join(lines)
+
+
+def _first_person_world(observation) -> str:
+    """first_person_polar's facts in world coordinates instead of body axes."""
+    own_x, own_y = observation.own_position
+    heading, speed = float(observation.own_heading), float(observation.own_speed)
+    fx, fy = cos(heading), sin(heading)
+    remaining = observation.due_time - observation.current_time
+    lines = [f"I am at ({_number(own_x)}, {_number(own_y)}) m, flying at {_number(speed)} m/s with heading "
+             f"{_number(degrees(heading) % 360)} deg counter-clockwise from the +x axis. My goal is at "
+             f"({_number(observation.goal[0])}, {_number(observation.goal[1])}) m. "
+             f"{_deadline(remaining)[0].upper() + _deadline(remaining)[1:]}."]
+    if not observation.contacts:
+        lines.append("No intruder is detected within 100 m of me.")
+    for index, contact in enumerate(observation.contacts):
+        f, l = float(contact.forward_m), float(contact.left_m)
+        vf, vl = float(contact.relative_forward_mps), float(contact.relative_left_mps)
+        x, y = own_x + f * fx - l * fy, own_y + f * fy + l * fx
+        vx, vy = vf * fx - vl * fy + speed * fx, vf * fy + vl * fx + speed * fy
+        lines.append(f"Intruder {index + 1} is at ({_number(x)}, {_number(y)}) m with velocity "
+                     f"({_number(vx)}, {_number(vy)}) m/s.")
+    return "\n".join(lines)
+
+
+def _first_person_list(observation) -> str:
+    """first_person_polar's facts as a bullet list."""
+    distance, goal_deg, remaining = _goal_facts(observation)
+    lines = [f"- my speed: {_number(observation.own_speed)} m/s",
+             f"- my goal: {_number(distance)} m away, {_side(goal_deg)}",
+             f"- my deadline: {_deadline(remaining).replace('my arrival deadline', 'deadline')}"]
+    if not observation.contacts:
+        lines.append("- intruders: none detected within 100 m of me")
+    for index, contact in enumerate(observation.contacts):
+        f, l = float(contact.forward_m), float(contact.left_m)
+        lines.append(f"- intruder {index + 1}: {_number(hypot(f, l))} m from me, {_side(degrees(atan2(l, f)))}; "
+                     f"relative to me it moves "
+                     f"{_motion(contact.relative_forward_mps, contact.relative_left_mps)}")
+    return "\n".join(lines)
+
+
 def _cpa(contact) -> tuple[float, float]:
     px, py = float(contact.forward_m), float(contact.left_m)
     vx, vy = float(contact.relative_forward_mps), float(contact.relative_left_mps)
     speed_sq = vx * vx + vy * vy
     time = min(max(-(px * vx + py * vy) / speed_sq, 0.0), CPA_HORIZON_S) if speed_sq else 0.0
     return time, hypot(px + vx * time, py + vy * time)
+
+
+RENDERERS = {"paper14_prose": _paper14_prose, "paper14_semantic": _paper14_semantic,
+             "first_person_derived": _first_person_derived, "first_person_clock": _first_person_clock,
+             "first_person_world": _first_person_world, "first_person_list": _first_person_list}
 
 
 def action_criteria() -> dict[str, str]:
@@ -236,6 +413,8 @@ def build_prompt(observation, spec: PromptSpec) -> dict:
         state = _polar(observation, first_person=spec.state_style in FIRST_PERSON_STYLES)
     elif spec.state_style in SEMANTIC_STYLES:
         state = _semantic(observation, first_person=spec.state_style in FIRST_PERSON_STYLES)
+    elif spec.state_style in RENDERERS:
+        state = RENDERERS[spec.state_style](observation)
     else:
         state = _kinematic_fields(observation)
         if spec.state_style == "cpa_brief":
