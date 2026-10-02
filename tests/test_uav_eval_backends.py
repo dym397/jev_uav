@@ -1,6 +1,7 @@
 """Real decision-response and HTTP boundary checks."""
 
 import json
+import math
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
@@ -50,13 +51,14 @@ def test_nano_adapter_preserves_native_state_batch_contract():
     assert seen == [{"states": [{"id": "uav", **payload}]}]
 
 
-def test_http_adapter_posts_systemone_payload_and_reads_probabilities():
-    received = []
+def test_http_adapter_posts_systemone_payload_and_reads_probabilities(monkeypatch):
+    received, auth = [], []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             size = int(self.headers["Content-Length"])
             received.append((self.path, json.loads(self.rfile.read(size))))
+            auth.append(self.headers.get("Authorization"))
             body = json.dumps({"answers": {"action": {
                 "type": "choice", "choice": "4", "probabilities": probabilities(),
             }}}).encode()
@@ -83,6 +85,13 @@ def test_http_adapter_posts_systemone_payload_and_reads_probabilities():
         labeled.predict(payload)
         assert labeled.model_id == "Open-Jev-9B"
         assert received[-1] == ("/v1/systemone", {"model": "open-jev", **payload})
+        assert auth == [None, None]
+        # The hosted Jev API: a bearer token from the environment, no model (its default).
+        monkeypatch.setenv("TEST_JEV_KEY", "secret")
+        hosted = SystemOneHTTPBackend(url, model_id="jev-official", request_model="", api_key_env="TEST_JEV_KEY")
+        hosted.predict(payload)
+        assert received[-1] == ("/v1/systemone", payload)
+        assert auth[-1] == "Bearer secret"
     finally:
         server.shutdown()
         server.server_close()
@@ -118,3 +127,13 @@ def test_decider_adapter_asks_one_question_and_renormalizes_rounding():
     action = {"type": "choice", "instructions": "Act.", "criteria": {str(i): f"action {i}" for i in range(9)}}
     values = backend.predict({"state": "s", "questions": {"action": action}})
     assert set(values) == set(range(9)) and sum(values.values()) == pytest.approx(1.0, abs=1e-12)
+
+
+def test_rounded_probabilities_need_a_tolerance_and_are_renormalized():
+    from uav_eval.backends import validate_distribution
+
+    rounded = {"a": 0.33, "b": 0.33, "c": 0.33}
+    with pytest.raises(ValueError):
+        validate_distribution(rounded, ["a", "b", "c"])
+    values = validate_distribution(rounded, ["a", "b", "c"], sum_tol=0.05)
+    assert math.isclose(sum(values.values()), 1.0) and math.isclose(values["a"], 1 / 3)

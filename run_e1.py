@@ -59,6 +59,9 @@ def main(argv=None) -> None:
     run.add_argument("--model-path", type=Path)
     run.add_argument("--endpoint")
     run.add_argument("--request-model", help="systemone: the request's model name, if not --model-id")
+    run.add_argument("--api-key-env", help="systemone: env var holding a bearer token")
+    run.add_argument("--sum-tolerance", type=float, default=1e-3,
+                     help="systemone: accepted |sum-1| before renormalizing (rounded probabilities)")
     run.add_argument("--checkpoint-dir", type=Path, default=Path("external/NanoJev/checkpoints/NanoJev-unified"))
     run.add_argument("--source-dir", type=Path, default=Path("external/NanoJev"))
     run.add_argument("--device", default="cuda:0")
@@ -83,6 +86,7 @@ def main(argv=None) -> None:
         probes = read_probes(args.probes)[: args.limit]
         backend = build_backend(args.backend, model_id=args.model_id, model_path=args.model_path,
                                 endpoint=args.endpoint, request_model=args.request_model,
+                                api_key_env=args.api_key_env, sum_tol=args.sum_tolerance,
                                 checkpoint_dir=args.checkpoint_dir,
                                 source_dir=args.source_dir, device=args.device)
         args.output_dir.mkdir(parents=True, exist_ok=True)

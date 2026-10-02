@@ -6,7 +6,7 @@ from pathlib import Path
 BACKENDS = ("nano", "systemone", "jevk5", "laya", "decider")
 
 
-def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None, request_model=None,
+def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None, request_model=None, api_key_env=None, sum_tol=1e-3,
                   checkpoint_dir=Path("external/NanoJev/checkpoints/NanoJev-unified"),
                   source_dir=Path("external/NanoJev"), device="cuda:0", precision="bf16"):
     from .backends import DeciderBackend, JevK5Backend, LayaBackend, NanoBackend, SystemOneHTTPBackend
@@ -27,6 +27,15 @@ def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None, r
     if kind == "decider":
         from decider.infer import Decider
 
+        if device == "sharded":
+            # Backbones past one card (decider-35b-a3b, 65 GB bf16): layers over both GPUs and host memory
+            # (uav_eval.sharding), on the plain path since CUDA graphs need one device.
+            import decider.model
+            from .sharding import shard
+
+            shard(decider.model, decider.model.DecisionModel)
+            return DeciderBackend(Decider(str(model_path), device="cuda:0", use_graphs=False),
+                                  model_id=model_id or Path(model_path).name)
         if str(device).startswith("cuda:"):
             import torch
 
@@ -34,5 +43,6 @@ def build_backend(kind: str, *, model_id=None, model_path=None, endpoint=None, r
             torch.cuda.set_device(device)
         return DeciderBackend(Decider(str(model_path), device=device), model_id=model_id or Path(model_path).name)
     if kind == "systemone":
-        return SystemOneHTTPBackend(endpoint, model_id=model_id, request_model=request_model)
+        return SystemOneHTTPBackend(endpoint, model_id=model_id, request_model=request_model,
+                                    api_key_env=api_key_env, sum_tol=sum_tol)
     raise ValueError(f"Unknown backend: {kind}")

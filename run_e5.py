@@ -19,6 +19,7 @@ def _seeds(args) -> range:
 def run_model(args) -> None:
     backend = build_backend(args.backend, model_id=args.model_id, model_path=args.model_path,
                             endpoint=args.endpoint, request_model=args.request_model,
+                            api_key_env=args.api_key_env, sum_tol=args.sum_tolerance,
                             checkpoint_dir=args.checkpoint_dir, source_dir=args.source_dir,
                             device=args.device, precision="bf16")
     for style in args.styles:
@@ -95,6 +96,9 @@ def main(argv=None) -> None:
     model.add_argument("--model-id")
     model.add_argument("--endpoint", help="systemone: the /v1/systemone URL")
     model.add_argument("--request-model", help="systemone: the request's model name, if not --model-id")
+    model.add_argument("--api-key-env", help="systemone: env var holding a bearer token")
+    model.add_argument("--sum-tolerance", type=float, default=1e-3,
+                     help="systemone: accepted |sum-1| before renormalizing (rounded probabilities)")
     model.add_argument("--checkpoint-dir", type=Path,
                        default=Path("external/NanoJev/checkpoints/NanoJev-unified"))
     model.add_argument("--source-dir", type=Path, default=Path("external/NanoJev"))

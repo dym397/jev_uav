@@ -2,12 +2,23 @@
 
 import json
 import math
+import os
+import time
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from config import ACTION_SPACE
 
 
-def normalize_choice(response: dict) -> dict[int, float]:
+def _checked_sum(values: dict, sum_tol: float, what: str) -> dict:
+    # sum_tol > 1e-3 admits servers that round each probability (the hosted Jev API sends two decimals).
+    total = math.fsum(values.values())
+    if not math.isclose(total, 1.0, rel_tol=0, abs_tol=sum_tol):
+        raise ValueError(f"{what} must sum to one")
+    return {key: value / total for key, value in values.items()}
+
+
+def normalize_choice(response: dict, sum_tol: float = 1e-3) -> dict[int, float]:
     try:
         if "states" in response:
             rows = response["states"]
@@ -27,14 +38,12 @@ def normalize_choice(response: dict) -> dict[int, float]:
             if type(number) not in (float, int) or not math.isfinite(number) or number < 0:
                 raise ValueError("Choice probabilities must be finite and nonnegative")
             values[action_id] = float(number)
-        if not math.isclose(math.fsum(values.values()), 1.0, rel_tol=0, abs_tol=1e-3):
-            raise ValueError("Choice probabilities must sum to one")
-        return values
+        return _checked_sum(values, sum_tol, "Choice probabilities")
     except (KeyError, TypeError, IndexError, AttributeError) as error:
         raise ValueError("Malformed Choice response") from error
 
 
-def validate_distribution(raw, keys) -> dict[str, float]:
+def validate_distribution(raw, keys, sum_tol: float = 1e-3) -> dict[str, float]:
     """A finite, normalized distribution over exactly the offered option keys."""
     if not isinstance(raw, dict) or set(raw) != set(keys):
         raise ValueError(f"Expected probabilities over {sorted(keys)}, got {raw!r}")
@@ -44,9 +53,7 @@ def validate_distribution(raw, keys) -> dict[str, float]:
         if type(number) not in (float, int) or not math.isfinite(number) or number < 0:
             raise ValueError("Probabilities must be finite and nonnegative")
         values[key] = float(number)
-    if not math.isclose(math.fsum(values.values()), 1.0, rel_tol=0, abs_tol=1e-3):
-        raise ValueError("Probabilities must sum to one")
-    return values
+    return _checked_sum(values, sum_tol, "Probabilities")
 
 
 def _laya_checked(response: dict) -> dict:
@@ -136,30 +143,42 @@ class LayaBackend:
 
 class SystemOneHTTPBackend:
     def __init__(self, url: str, *, model_id: str | None = None, request_model: str | None = None,
+                 api_key_env: str | None = None, sum_tol: float = 1e-3, retries: int = 4,
                  timeout: float = 60.0):
         self.url = url
         self.model_id = model_id or url
         # Sent as the request's "model"; some servers accept only their own names (Open-Jev), so the
-        # label in our tables (model_id) can differ from it.
+        # label in our tables (model_id) can differ from it. "" sends no model (the server's default).
         self.request_model = request_model if request_model is not None else model_id
+        # The key is read from the environment only, so it never lands in argv, logs or records.
+        self.headers = {"Content-Type": "application/json"}
+        if api_key_env:
+            key = os.environ.get(api_key_env)
+            if not key:
+                raise ValueError(f"{api_key_env} is not set")
+            self.headers["Authorization"] = f"Bearer {key}"
+        self.sum_tol = sum_tol
+        self.retries = retries
         self.timeout = timeout
 
-    def ask(self, state: str, question: dict) -> dict[str, float]:
-        body = {"state": state, "questions": {"q": question}}
-        if self.request_model is not None:
-            body["model"] = self.request_model
+    def _post(self, body: dict) -> dict:
+        if self.request_model:
+            body = {**body, "model": self.request_model}
         data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        request = Request(self.url, data=data, headers={"Content-Type": "application/json"})
-        with urlopen(request, timeout=self.timeout) as response:
-            decoded = json.load(response)
-        return validate_distribution(decoded["answers"]["q"]["probabilities"], question["criteria"])
+        for attempt in range(self.retries + 1):
+            try:
+                with urlopen(Request(self.url, data=data, headers=self.headers), timeout=self.timeout) as response:
+                    return json.load(response)
+            except (HTTPError, URLError, TimeoutError) as failure:
+                # Rate limits, server errors and dropped connections are retried; a 4xx is the request's fault.
+                transient = not isinstance(failure, HTTPError) or failure.code == 429 or failure.code >= 500
+                if not transient or attempt == self.retries:
+                    raise
+                time.sleep(2 ** attempt)
+
+    def ask(self, state: str, question: dict) -> dict[str, float]:
+        decoded = self._post({"state": state, "questions": {"q": question}})
+        return validate_distribution(decoded["answers"]["q"]["probabilities"], question["criteria"], self.sum_tol)
 
     def predict(self, payload: dict) -> dict[int, float]:
-        body = {**payload}
-        if self.request_model is not None:
-            body["model"] = self.request_model
-        data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
-        request = Request(self.url, data=data, headers={"Content-Type": "application/json"})
-        with urlopen(request, timeout=self.timeout) as response:
-            decoded = json.load(response)
-        return normalize_choice(decoded)
+        return normalize_choice(self._post(payload), self.sum_tol)
