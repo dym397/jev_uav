@@ -25,8 +25,8 @@ in_process() {  # in_process <decider model> [UAV_MAX_MEMORY]
       --probes $R/probes.jsonl --styles $styles --output-dir $C/$1 $limit > $L/e1_$1.log 2>&1 && echo DONE_$1
 }
 
-in_process decider-12b "0=16GiB,1=22GiB"
-served kev-27b 8008
+# done: in_process decider-12b "0=16GiB,1=22GiB"
+# done: served kev-27b 8008
 served Open-Jev-27B 8791
 in_process decider-35b-a3b "0=17GiB,1=18GiB,cpu=100GiB"  # headroom for the fused-expert concat at load; ~13 s/call
 echo ALL_DONE
