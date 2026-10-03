@@ -2,7 +2,8 @@
 # Run a command against kev's or Open-Jev's own /v1/systemone server, then stop the server.
 # Each runs in its own conda env (their transformers/peft/torch pins clash with jev_uav's).
 # The command sees ENDPOINT and REQUEST_MODEL (the model name that server accepts).
-# usage: with_server.sh <kev-4b|kev-9b|Open-Jev-9B> <gpu> <port> <command...>
+# usage: with_server.sh <kev-*|Open-Jev-*|imajev-*|Wald-4B|CLM-v0.1-8B> <gpu> <port> <command...>
+# imajev runs in env jev_imajev, Wald and CLM in jev_vllm (vLLM 0.30.0+cu129); Wald and CLM also take port+1 for vLLM.
 # gpu=all: a model past one card over both GPUs. kev-27b goes through scripts/kev_serve_sharded.py (bf16, layers
 # past the GPUs in host memory); Open-Jev-27B in 8-bit (bf16 does not fit 48 GB and its loader refuses offload).
 set -u
@@ -33,11 +34,44 @@ case $name in
         --checkpoint $M/$name/package/checkpoint --device cuda:0 --batch-size 1 --port $port &
     fi
     ready=/health; REQUEST_MODEL=open-jev ;;
+  imajev-*)
+    # Official torch backend, set up as for its published JevBench numbers (--fast --merge-lora --rotations 1 --calibration).
+    # The LoRA r16 + readout adapter sits on Qwen/Qwen3.5-*B at the revision pinned in artifacts/model-qwen*b.json.
+    X=/home/mydisk1/jev_uav/external/imajev
+    size=${name#imajev-}
+    adapter=$(ls -d $HF_HOME/hub/models--mohit67890--$name/snapshots/*/ | head -1)
+    rev=$(sed -n 's/.*"revision": "\(.*\)".*/\1/p' $X/artifacts/model-qwen$size.json)
+    bundle=/tmp/imajev_bundle_$size.json
+    echo "{\"path\": \"$HF_HOME/hub/models--Qwen--Qwen3.5-${size^^}/snapshots/$rev\"}" > $bundle
+    (cd $X && CUDA_VISIBLE_DEVICES=${gpu/all/0,1} PYTHONPATH=src:scripts exec ~/anaconda3/envs/jev_imajev/bin/python \
+        scripts/playground/server.py --backend torch --model-bundle $bundle --adapter $adapter \
+        --calibration $adapter/calibration.json --model-name $name --fast --merge-lora --rotations 1 --port $port) &
+    ready=/v1/models; REQUEST_MODEL="" ;;
+  Wald-*)
+    # Official wald-serve: it starts its own vLLM 0.30.0 sidecar and reads serving.json (effort none, repeat_state_plain)
+    # and temperature.json from the weights dir. Context capped at 8192 so the KV cache fits a 3090.
+    weights=$(ls -d $HF_HOME/hub/models--org2ai--$name/snapshots/*/ | head -1)
+    CUDA_VISIBLE_DEVICES=${gpu/all/0} VLLM_USE_FLASHINFER_SAMPLER=0 VLLM_NO_USAGE_STATS=1 TOKENIZERS_PARALLELISM=false \
+        ~/anaconda3/envs/jev_vllm/bin/wald-serve --model $weights --port $port --vllm-port $((port + 1)) \
+        --max-model-len 8192 &
+    ready=/health; REQUEST_MODEL="" ;;
+  CLM-*)
+    # Official pair: Qwen3-8B as a vLLM pooling encoder (serve_qwen3_8b.sh settings) behind clm-serve's InfoNCE heads.
+    ckpt=$(ls $HF_HOME/hub/models--Contrastive-LM--$name/snapshots/*/CLM_*.pt | head -1)
+    CUDA_VISIBLE_DEVICES=${gpu/all/0} VLLM_NO_USAGE_STATS=1 ~/anaconda3/envs/jev_vllm/bin/vllm serve Qwen/Qwen3-8B \
+        --served-model-name qwen3-8b --runner pooling --enforce-eager --enable-prefix-caching --max-model-len 2048 \
+        --gpu-memory-utilization 0.80 --max-num-seqs 32 --port $((port + 1)) &
+    encoder=$!
+    CUDA_VISIBLE_DEVICES=${gpu/all/0} ~/anaconda3/envs/jev_vllm/bin/clm-serve --port $port \
+        --emb-url http://127.0.0.1:$((port + 1))/v1/embeddings --ckpt $ckpt &
+    ready=/health; REQUEST_MODEL=clm-latest ;;
   *) echo "unknown model $name"; exit 2 ;;
 esac
 server=$!
-trap 'kill $server' EXIT
-until curl -sf 127.0.0.1:$port$ready > /dev/null; do
+trap 'kill $server ${encoder:-}' EXIT
+# CLM's /health answers before its encoder is up, so wait for the encoder too.
+until curl -sf 127.0.0.1:$port$ready > /dev/null \
+      && { [ -z "${encoder:-}" ] || curl -sf 127.0.0.1:$((port + 1))/v1/models > /dev/null; }; do
   kill -0 $server 2> /dev/null || { echo "server for $name exited"; exit 1; }
   sleep 5
 done
