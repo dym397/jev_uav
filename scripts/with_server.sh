@@ -2,7 +2,8 @@
 # Run a command against kev's or Open-Jev's own /v1/systemone server, then stop the server.
 # Each runs in its own conda env (their transformers/peft/torch pins clash with jev_uav's).
 # The command sees ENDPOINT and REQUEST_MODEL (the model name that server accepts).
-# usage: with_server.sh <kev-*|Open-Jev-*|imajev-*|Wald-4B|CLM-v0.1-8B> <gpu> <port> <command...>
+# usage: with_server.sh <kev-*|Open-Jev-*|imajev-*|Wald-4B|CLM-v0.1-8B|JPT-9B|Decision-2.0-Lux-9B|Winnow-12B> <gpu> <port> <command...>
+# JPT and Lux run in env jev_sys1; Winnow is its own llama.cpp build (Q8_0 GGUF).
 # imajev runs in env jev_imajev, Wald and CLM in jev_vllm (vLLM 0.30.0+cu129); Wald and CLM also take port+1 for vLLM.
 # gpu=all: a model past one card over both GPUs. kev-27b goes through scripts/kev_serve_sharded.py (bf16, layers
 # past the GPUs in host memory); Open-Jev-27B in 8-bit (bf16 does not fit 48 GB and its loader refuses offload).
@@ -65,6 +66,25 @@ case $name in
     CUDA_VISIBLE_DEVICES=${gpu/all/0} ~/anaconda3/envs/jev_vllm/bin/clm-serve --port $port \
         --emb-url http://127.0.0.1:$((port + 1))/v1/embeddings --ckpt $ckpt &
     ready=/health; REQUEST_MODEL=clm-latest ;;
+  JPT-*)
+    # llm2jev's in-process HF backend (bf16) with the card's single temperature T = 1.087 and its default chat prompt.
+    weights=$(ls -d $HF_HOME/hub/models--kirp--${name,,}/snapshots/*/ | head -1)
+    CUDA_VISIBLE_DEVICES=${gpu/all/0,1} ~/anaconda3/envs/jev_sys1/bin/llm2jev --model $weights --backend hf \
+        --temperature 1.087 --host 127.0.0.1 --port $port &
+    ready=/health; REQUEST_MODEL="" ;;
+  Decision-2.0-*)
+    # The package ships no server; scripts/serve_lux.py wraps its system_one (runtime numerics: bf16, fp32 head).
+    weights=$(ls -d $HF_HOME/hub/models--vllm-sr--$name/snapshots/*/ | head -1)
+    CUDA_VISIBLE_DEVICES=${gpu/all/0} ~/anaconda3/envs/jev_sys1/bin/python $code/scripts/serve_lux.py $weights \
+        --port $port &
+    ready=/health; REQUEST_MODEL="" ;;
+  Winnow-*)
+    # Official winnow-server build (llama.cpp fork) with its CUDA profile; Q8_0 is the largest release that fits a
+    # 3090, text-only (no vision projector).
+    weights=$(ls $HF_HOME/hub/models--EldanRing--$name/snapshots/*/gguf/$name-Q8_0.gguf | head -1)
+    (cd /home/mydisk1/jev_uav/external/winnow-inference && exec python3 scripts/serve.py --profile 5070ti-64k \
+        --model $weights --text-only --gpu ${gpu/all/0} --port $port) &
+    ready=/health; REQUEST_MODEL="" ;;
   *) echo "unknown model $name"; exit 2 ;;
 esac
 server=$!
