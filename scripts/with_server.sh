@@ -73,6 +73,7 @@ trap 'kill $server ${encoder:-}' EXIT
 until curl -sf 127.0.0.1:$port$ready > /dev/null \
       && { [ -z "${encoder:-}" ] || curl -sf 127.0.0.1:$((port + 1))/v1/models > /dev/null; }; do
   kill -0 $server 2> /dev/null || { echo "server for $name exited"; exit 1; }
+  [ -z "${encoder:-}" ] || kill -0 $encoder 2> /dev/null || { echo "encoder for $name exited"; exit 1; }
   sleep 5
 done
 export ENDPOINT=http://127.0.0.1:$port/v1/systemone REQUEST_MODEL
