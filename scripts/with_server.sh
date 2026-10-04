@@ -85,6 +85,16 @@ case $name in
     (cd /home/mydisk1/jev_uav/external/winnow-inference && exec python3 scripts/serve.py --profile 5070ti-64k \
         --model $weights --text-only --gpu ${gpu/all/0} --port $port) &
     ready=/health; REQUEST_MODEL="" ;;
+  pplx-decider-*)
+    # Its own autojev.server (repository source/, env jev_sys1 has its pins); gpu=all shards the 27B bf16 backbone.
+    weights=$(ls -d $HF_HOME/hub/models--perplexity-ai--$name/snapshots/*/ | head -1)
+    if [ "$gpu" = all ]; then
+      AUTOJEV_CHECKPOINT=$weights PORT=$port ~/anaconda3/envs/jev_sys1/bin/python $code/scripts/pplx_serve_sharded.py &
+    else
+      (cd $weights/source/src && AUTOJEV_CHECKPOINT=$weights PORT=$port CUDA_VISIBLE_DEVICES=$gpu \
+          exec ~/anaconda3/envs/jev_sys1/bin/python -m autojev.server) &
+    fi
+    ready=/health; REQUEST_MODEL=jev-latest ;;
   *) echo "unknown model $name"; exit 2 ;;
 esac
 server=$!

@@ -40,8 +40,9 @@ def device_map_for(cls, name, budget: dict, **kwargs) -> dict:
     from transformers import AutoConfig
 
     config = AutoConfig.from_pretrained(name, **{k: v for k, v in kwargs.items() if k == "revision"})
-    with init_empty_weights():
-        skeleton = cls.from_config(config, dtype=kwargs.get("dtype"))
+    with init_empty_weights():   # Auto* classes build from a config; a concrete model class is called on it
+        skeleton = (cls.from_config(config, dtype=kwargs.get("dtype")) if hasattr(cls, "from_config")
+                    else cls(config))
     sizes = compute_module_sizes(skeleton, dtype=kwargs.get("dtype"))
     layers_name = max((n for n, m in skeleton.named_modules() if isinstance(m, torch.nn.ModuleList) and n.endswith("layers")),
                       key=lambda n: sizes[n])
@@ -94,19 +95,22 @@ def _peft_to(self, *args, **kwargs):
     return self   # only ever wrapping the dispatched backbone in this process
 
 
-def _to_outside_backbone(self, *args, **kwargs):
-    """`.to` for a wrapper whose `lm` is already dispatched: move every other child and the wrapper's own buffers."""
-    for child_name, child in self.named_children():
-        if child_name != "lm":
-            child.to(*args, **kwargs)
-    for buffer_name, buffer in list(self.named_buffers(recurse=False)):
-        setattr(self, buffer_name, buffer.to(*args, **kwargs))
-    return self
+def _to_outside(backbone: str):
+    def to(self, *args, **kwargs):
+        """`.to` for a wrapper whose backbone is already dispatched: move every other child and its own buffers."""
+        for child_name, child in self.named_children():
+            if child_name != backbone:
+                child.to(*args, **kwargs)
+        for buffer_name, buffer in list(self.named_buffers(recurse=False)):
+            setattr(self, buffer_name, buffer.to(*args, **kwargs))
+        return self
+    return to
 
 
-def shard(module, decision_model_cls) -> None:
-    """Patch a library module that does `Auto*.from_pretrained(...)` then `DecisionModel.to(device)`."""
-    for attr in ("AutoModel", "AutoModelForCausalLM"):
+def shard(module, decision_model_cls, loaders=("AutoModel", "AutoModelForCausalLM"), backbone="lm") -> None:
+    """Patch a library module that does `<loader>.from_pretrained(...)` then `DecisionModel.to(device)`; `loaders`
+    names the classes it loads the backbone through and `backbone` the wrapper's attribute holding it."""
+    for attr in loaders:
         auto = getattr(module, attr, None)
         if auto is None:
             continue
@@ -115,7 +119,7 @@ def shard(module, decision_model_cls) -> None:
             from_pretrained = staticmethod(_sharded_from_pretrained(auto, auto.from_pretrained))
 
         setattr(module, attr, Sharded)
-    decision_model_cls.to = _to_outside_backbone
+    decision_model_cls.to = _to_outside(backbone)
     try:   # a LoRA loaded onto the dispatched backbone is moved the same way (kev: PeftModel.from_pretrained(...).to(device))
         from peft import PeftModel
     except ImportError:
