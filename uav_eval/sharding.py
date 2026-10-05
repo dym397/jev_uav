@@ -40,6 +40,9 @@ def device_map_for(cls, name, budget: dict, **kwargs) -> dict:
     from transformers import AutoConfig
 
     config = AutoConfig.from_pretrained(name, **{k: v for k, v in kwargs.items() if k == "revision"})
+    config_class = getattr(cls, "config_class", None)
+    if hasattr(config, "text_config") and config_class is not None and not isinstance(config, config_class):
+        config = config.text_config   # a text-only class (Qwen3_5ForCausalLM) on a multimodal checkpoint
     with init_empty_weights():   # Auto* classes build from a config; a concrete model class is called on it
         skeleton = (cls.from_config(config, dtype=kwargs.get("dtype")) if hasattr(cls, "from_config")
                     else cls(config))

@@ -2,7 +2,7 @@
 # Run a command against kev's or Open-Jev's own /v1/systemone server, then stop the server.
 # Each runs in its own conda env (their transformers/peft/torch pins clash with jev_uav's).
 # The command sees ENDPOINT and REQUEST_MODEL (the model name that server accepts).
-# usage: with_server.sh <kev-*|Open-Jev-*|imajev-*|Wald-4B|CLM-v0.1-8B|JPT-9B|Decision-2.0-Lux-9B|Winnow-12B|pplx-decider-*|rune-*> <gpu> <port> <command...>
+# usage: with_server.sh <kev-*|Open-Jev-*|imajev-*|Wald-4B|CLM-v0.1-8B|JPT-9B|Decision-2.0-Lux-9B|Winnow-12B|pplx-decider-*|jebadiah-*|rune-*> <gpu> <port> <command...>
 # JPT and Lux run in env jev_sys1; Winnow is its own llama.cpp build (Q8_0 GGUF).
 # imajev runs in env jev_imajev, Wald and CLM in jev_vllm (vLLM 0.30.0+cu129); Wald and CLM also take port+1 for vLLM.
 # gpu=all: a model past one card over both GPUs. kev-27b goes through scripts/kev_serve_sharded.py (bf16, layers
@@ -95,6 +95,18 @@ case $name in
           exec ~/anaconda3/envs/jev_sys1/bin/python -m autojev.server) &
     fi
     ready=/health; REQUEST_MODEL=jev-latest ;;
+  jebadiah-*)
+    # Its standalone jebadiah-serve (repository server/, installed in jev_sys1); /health is 503 until the model is
+    # loaded. gpu=all shards the 27B bf16 backbone through scripts/jebadiah_serve_sharded.py.
+    weights=$(ls -d $HF_HOME/hub/models--frontier-infra--$name/snapshots/*/ | head -1)
+    if [ "$gpu" = all ]; then
+      ~/anaconda3/envs/jev_sys1/bin/python $code/scripts/jebadiah_serve_sharded.py --model $weights --device cuda:0 \
+          --batch-size 1 --port $port &
+    else
+      CUDA_VISIBLE_DEVICES=$gpu ~/anaconda3/envs/jev_sys1/bin/jebadiah-serve --model $weights --device cuda:0 \
+          --port $port &
+    fi
+    ready=/health; REQUEST_MODEL=jebadiah ;;
   rune-*)
     # Its engine (surogate) has no 2x3090 build here; scripts/serve_rune.py reads decisions v1 in transformers (bf16,
     # sharded past the GPUs) at the card's calibration temperature 2.
