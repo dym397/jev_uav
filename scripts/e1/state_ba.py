@@ -1,8 +1,9 @@
-"""approach / side / conflict balanced accuracy per (model, style) from the E1 matrix records, as JSON.
+"""approach / side / conflict balanced accuracy per (model, style) from E1 records, as JSON.
 
-    python scripts/e1/state_ba.py RESULTS_DIR PROBES.jsonl > state_ba.json
+    python scripts/e1/state_ba.py PROBES.jsonl RECORDS.jsonl [RECORDS.jsonl ...] > state_ba.json
 
-RESULTS_DIR holds one <model>/records.jsonl per model (a run still in progress is read as far as it got).
+Each records file is <model>/records.jsonl (the directory names the model); files are merged per model, a later file
+overriding an earlier one for the same style. A run still in progress is read as far as it got.
 Output: {model: {style: {question: {"ba": float|null, "n": int}}}}.
 """
 
@@ -14,10 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from uav_eval.e1 import analyze  # noqa: E402
 
-root, probes_path = Path(sys.argv[1]), sys.argv[2]
-probes = [json.loads(line) for line in open(probes_path, encoding="utf-8")]
+probes = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8")]
 out = {}
-for records_path in sorted(root.glob("*/records.jsonl")):
+for records_path in map(Path, sys.argv[2:]):
     records = []
     for line in open(records_path, encoding="utf-8"):
         try:
@@ -25,7 +25,7 @@ for records_path in sorted(root.glob("*/records.jsonl")):
         except json.JSONDecodeError:   # the last line of a run being written
             pass
     report = analyze(records, probes)
-    out[records_path.parent.name] = {
+    out.setdefault(records_path.parent.name, {}).update({
         style: {q: {"ba": row[q]["balanced_accuracy"], "n": row[q]["n"]} for q in ("approach", "side", "conflict")}
-        for style, row in report["styles"].items()}
+        for style, row in report["styles"].items()})
 json.dump(out, sys.stdout, indent=1)
