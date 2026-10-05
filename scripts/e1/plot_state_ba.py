@@ -26,8 +26,7 @@ data = json.load(open(sys.argv[1], encoding="utf-8"))
 out = Path(sys.argv[2])
 out.mkdir(parents=True, exist_ok=True)
 
-STYLES = ["paper14", "paper14_prose", "paper14_semantic", "kinematic_fields", "kinematic_prose",
-          "third_person_polar", "first_person_polar", "first_person_clock", "first_person_world", "first_person_list",
+STYLES = ["paper14", "paper14_prose", "paper14_semantic", "third_person_polar", "first_person_polar", "first_person_clock", "first_person_world", "first_person_list",
           "first_person_derived", "third_person_semantic", "first_person_semantic"]
 MODELS = ["NanoJev", "laya", "laya-typed-decisions", "decider-0.8b", "decider-2b", "Qwen3.5-4B", "Wald-4B",
           "decider-4b", "kev-4b", "CLM-v0.1-8B", "kev-9b", "JevK5-9B", "Open-Jev-9B", "imajev-9b", "JPT-9B",
