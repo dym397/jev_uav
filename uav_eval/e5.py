@@ -27,10 +27,11 @@ OUTCOMES = ("success", "collision", "timeout", "out_of_bounds")
 class ModelPolicy:
     """Argmax of the backend's nine-action distribution; invalid answers fall back to MAINTAIN."""
 
-    def __init__(self, backend, state_style: str, question_style: str = "balanced"):
+    def __init__(self, backend, state_style: str, question_style: str = "balanced", max_invalid: int | None = None):
         self.backend = backend
         self.spec = PromptSpec(state_style, question_style)
         self.invalid = 0
+        self.max_invalid = max_invalid
         self.latencies_ms = []
 
     def select_action(self, state) -> int:
@@ -38,8 +39,11 @@ class ModelPolicy:
         try:
             probabilities = _valid_probabilities(self.backend.predict(build_prompt(state, self.spec)))
             action = max(range(9), key=lambda a: (probabilities[a], -a))
-        except Exception:
+        except Exception as failure:
             self.invalid += 1
+            if self.max_invalid is not None and self.invalid > self.max_invalid:
+                # A paid API out of credit fails every call; stop rather than fly whole episodes on the fallback.
+                raise RuntimeError(f"more than {self.max_invalid} invalid decisions; last: {failure!r}") from failure
             action = 4
         self.latencies_ms.append((perf_counter() - started) * 1000)
         return action

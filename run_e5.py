@@ -23,7 +23,7 @@ def run_model(args) -> None:
                             checkpoint_dir=args.checkpoint_dir, source_dir=args.source_dir,
                             device=args.device, precision="bf16")
     for style in args.styles:
-        run_policy(f"{backend.model_id}:{style}", ModelPolicy(backend, style), _seeds(args),
+        run_policy(f"{backend.model_id}:{style}", ModelPolicy(backend, style, max_invalid=args.max_invalid), _seeds(args),
                    args.output, model_id=backend.model_id, state_style=style)
 
 
@@ -103,6 +103,8 @@ def main(argv=None) -> None:
                        default=Path("external/NanoJev/checkpoints/NanoJev-unified"))
     model.add_argument("--source-dir", type=Path, default=Path("external/NanoJev"))
     model.add_argument("--device", default="cuda:0")
+    model.add_argument("--max-invalid", type=int,
+                       help="Abort the run after this many invalid decisions (default: never; they fall back to MAINTAIN)")
     model.add_argument("--styles", nargs="+", choices=STATE_STYLES,
                        default=["third_person_semantic", "first_person_semantic"])
     sub.choices["baselines"].add_argument("--d3qn-checkpoint", type=Path, required=True)
